@@ -16,6 +16,7 @@
     "posthog-js": "^1.360.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "react-player": "^3.4.0",
     "rss-parser": "^3.13.0"
   },
   "devDependencies": {
