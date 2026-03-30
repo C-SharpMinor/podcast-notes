@@ -22,9 +22,19 @@ export default function ChoiceModal({
 				<div className="relative w-32 h-32 mx-auto mb-6">
 					{/* eslint-disable-next-line @next/next/no-img-element */}
 					<img
-						src={podcastData.artworkUrl100}
-						alt="cover"
-						className="w-full h-full rounded-2xl shadow-2xl border border-slate-700"
+						// This checks for the biggest image first, then falls back to smaller ones
+						src={
+							podcastData.artworkUrl600 ||
+							podcastData.artworkUrl100 ||
+							podcastData.artworkUrl60
+						}
+						alt={podcastData.trackName || "cover"}
+						className="w-full h-full rounded-2xl shadow-2xl border border-slate-700 object-cover"
+						// Handle broken links by hiding the broken icon
+						onError={(e) => {
+							(e.target as HTMLImageElement).src =
+								"https://via.placeholder.com/150?text=No+Image";
+						}}
 					/>
 					<div className="absolute -bottom-2 -right-2 bg-blue-600 rounded-full p-1.5 shadow-lg">
 						<svg

@@ -308,7 +308,7 @@ export default function Home() {
 								</div>
 								{searchResults.map((podcast) => (
 									<button
-										key={podcast.collectionId}
+										key={podcast.trackId || podcast.collectionId}
 										type="button"
 										onClick={() => handleSelectSearchResult(podcast)}
 										className="w-full flex items-center gap-3 p-3 hover:bg-slate-700 transition text-left border-b border-slate-700/50 last:border-0"
