@@ -1,16 +1,50 @@
 import Parser from "rss-parser";
 import { NextResponse } from "next/server";
+import dns from "dns/promises";
+import { createClient } from "@/utils/supabase/server";
+import { looseRatelimit } from "@/utils/ratelimit";
 
-// Give the parser 20 seconds to accommodate any severe network latency
+async function isSafeUrl(url: string) {
+	const parsed = new URL(url);
+	if (!["http:", "https:"].includes(parsed.protocol)) return false;
+	const { address } = await dns.lookup(parsed.hostname);
+	const priv = /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/;
+	return !priv.test(address) && address !== "::1";
+}
+
 const parser = new Parser({ timeout: 20000 });
 
 export async function POST(req: Request) {
+	const supabase = await createClient();
+	const {
+		data: { user },
+	} = await supabase.auth.getUser();
+	if (!user) {
+		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	}
+
+	const { success } = await looseRatelimit.limit(user.id);
+	if (!success) {
+		return NextResponse.json(
+			{ error: "Too many requests, slow down." },
+			{ status: 429 },
+		);
+	}
+
 	try {
 		const { url } = await req.json();
-		console.log("🟢 1. BACKEND RECEIVED URL:", url);
-
 		if (!url) {
 			return NextResponse.json({ error: "URL is required" }, { status: 400 });
+		}
+
+		if (url.includes("open.spotify.com")) {
+			return NextResponse.json(
+				{
+					error:
+						"Spotify links aren't supported — Spotify doesn't publish a public RSS feed for shows. Try searching for the show by name instead, or paste its original RSS feed URL if you have it.",
+				},
+				{ status: 400 },
+			);
 		}
 
 		let targetUrl = url;
@@ -18,23 +52,13 @@ export async function POST(req: Request) {
 		if (url.includes("podcasts.apple.com")) {
 			const idMatch = url.match(/id(\d+)/);
 			if (idMatch) {
-				const appleId = idMatch[1];
-				console.log(
-					"🟢 2. APPLE ID FOUND:",
-					appleId,
-					"- Asking iTunes for real RSS...",
-				);
-
 				const appleRes = await fetch(
-					`https://itunes.apple.com/lookup?id=${appleId}`,
+					`https://itunes.apple.com/lookup?id=${idMatch[1]}`,
 				);
 				const appleData = await appleRes.json();
-
 				if (appleData.results && appleData.results.length > 0) {
 					targetUrl = appleData.results[0].feedUrl;
-					console.log("🟢 3. ITUNES SUCCESS! Real RSS is:", targetUrl);
 				} else {
-					console.log("🔴 3. ITUNES FAILED: No feed found.");
 					return NextResponse.json(
 						{ error: "Could not resolve Apple Podcast link." },
 						{ status: 400 },
@@ -43,9 +67,13 @@ export async function POST(req: Request) {
 			}
 		}
 
-		console.log("🟢 4. FETCHING RAW XML AS A BROWSER:", targetUrl);
+		if (!(await isSafeUrl(targetUrl))) {
+			return NextResponse.json(
+				{ error: "This URL isn't allowed." },
+				{ status: 400 },
+			);
+		}
 
-		// 1. Spoof a real browser to bypass Cloudflare/bot-blockers
 		const rssResponse = await fetch(targetUrl, {
 			headers: {
 				"User-Agent":
@@ -55,22 +83,50 @@ export async function POST(req: Request) {
 		});
 
 		if (!rssResponse.ok) {
-			throw new Error(`Podcast host rejected request: ${rssResponse.status}`);
+			return NextResponse.json(
+				{
+					error: `The link didn't respond correctly (status ${rssResponse.status}). Double check it's a valid feed link.`,
+				},
+				{ status: 400 },
+			);
 		}
 
-		// 2. Download the raw text
 		const rssText = await rssResponse.text();
-		console.log("🟢 5. XML FETCHED, PARSING STRING...");
 
-		// 3. Feed the raw text into the parser manually
-		const feed = await parser.parseString(rssText);
-		console.log("🟢 6. PARSER FINISHED SUCCESSFULLY!");
+		// Fail fast with a clear message instead of letting the XML parser blow up on non-feed content
+		const trimmed = rssText.trim();
+		const looksLikeFeed =
+			trimmed.startsWith("<?xml") ||
+			trimmed.includes("<rss") ||
+			trimmed.includes("<feed");
+		if (!looksLikeFeed) {
+			return NextResponse.json(
+				{ error: "This link doesn't point to a podcast RSS feed." },
+				{ status: 400 },
+			);
+		}
+
+		let feed;
+		try {
+			feed = await parser.parseString(rssText);
+		} catch (parseErr: any) {
+			console.error("XML parse error:", parseErr.message);
+			return NextResponse.json(
+				{
+					error:
+						"Could not read this feed. It may be malformed or not a real podcast feed.",
+				},
+				{ status: 400 },
+			);
+		}
+
 		const episodes =
 			feed.items
 				?.map((item) => ({
 					title: item.title,
 					pubDate: item.pubDate,
 					audioUrl: item.enclosure?.url,
+					guid: item.guid,
 				}))
 				.filter((item) => item.audioUrl) || [];
 
@@ -80,7 +136,7 @@ export async function POST(req: Request) {
 			episodes,
 		});
 	} catch (error: any) {
-		console.error("🔴 BACKEND CRASH:", error.message);
+		console.error("RSS parse error:", error.message);
 		return NextResponse.json(
 			{
 				error:

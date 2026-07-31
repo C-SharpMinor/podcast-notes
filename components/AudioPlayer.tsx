@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
 import dynamic from "next/dynamic";
 
-// FIX 1: Use Dynamic import to prevent SSR crashes
 const ReactPlayer = dynamic(() => import("react-player"), {
 	ssr: false,
 }) as any;
@@ -13,33 +12,107 @@ interface AudioPlayerProps {
 	audioUrl?: string;
 	episodeTitle?: string;
 	userId?: string;
+	sourceType?: "rss" | "youtube" | "upload";
+	storagePath?: string;
+}
+
+type TranscriptSegment = { start: number; end: number; text: string };
+
+function getTranscriptWindow(
+	segments: TranscriptSegment[],
+	timestamp: number,
+	lookbackSeconds = 45,
+) {
+	const windowStart = Math.max(0, timestamp - lookbackSeconds);
+	return segments
+		.filter((s) => s.end >= windowStart && s.start <= timestamp)
+		.map((s) => s.text)
+		.join(" ");
 }
 
 export default function AudioPlayer({
 	audioUrl,
 	episodeTitle,
 	userId,
+	sourceType,
+	storagePath,
 }: AudioPlayerProps) {
 	const playerRef = useRef<any>(null);
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const audioChunksRef = useRef<Blob[]>([]);
+	const recordingMimeTypeRef = useRef("audio/webm");
+	const noteTimestampRef = useRef(0);
+	const episodeSegmentsRef = useRef<TranscriptSegment[]>([]);
 
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [isRecording, setIsRecording] = useState(false);
 	const [isProcessingAI, setIsProcessingAI] = useState(false);
 	const [errorMessage, setErrorMessage] = useState("");
 	const [savedNotes, setSavedNotes] = useState<any[]>([]);
-
+	const [transcriptStatus, setTranscriptStatus] = useState<
+		"idle" | "loading" | "ready" | "error"
+	>("idle");
 	const [isMounted, setIsMounted] = useState(false);
+
 	useEffect(() => setIsMounted(true), []);
+	useEffect(() => {
+		return () => {
+			mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop());
+		};
+	}, []);
+
+	const isYouTube =
+		audioUrl?.includes("youtube.com") || audioUrl?.includes("youtu.be");
+	const effectiveSourceType = sourceType || (isYouTube ? "youtube" : "rss");
+
+	useEffect(() => {
+		if (!audioUrl) return;
+		episodeSegmentsRef.current = [];
+		setTranscriptStatus("loading");
+
+		const endpoint =
+			effectiveSourceType === "youtube"
+				? "/api/transcribe-youtube"
+				: "/api/transcribe-episode";
+		const body =
+			effectiveSourceType === "youtube"
+				? { videoUrl: audioUrl }
+				: effectiveSourceType === "upload"
+					? { storagePath }
+					: { audioUrl };
+
+		fetch(endpoint, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		})
+			.then((r) => r.json())
+			.then((data) => {
+				if (data.segments) {
+					episodeSegmentsRef.current = data.segments;
+					setTranscriptStatus("ready");
+				} else {
+					setTranscriptStatus("error");
+				}
+			})
+			.catch(() => setTranscriptStatus("error"));
+	}, [audioUrl, effectiveSourceType, storagePath]);
 
 	const startRecording = async () => {
-		if (!audioUrl) return setErrorMessage("Load an episode or video first!");
+		if (!audioUrl) return setErrorMessage("Load an episode or video first.");
+		noteTimestampRef.current = playerRef.current?.getCurrentTime() || 0;
+		setIsPlaying(false);
+
 		try {
 			const stream = await navigator.mediaDevices.getUserMedia({
 				audio: { noiseSuppression: true, echoCancellation: true },
 			});
-			const mediaRecorder = new MediaRecorder(stream);
+			const mimeType = MediaRecorder.isTypeSupported("audio/webm")
+				? "audio/webm"
+				: "audio/mp4";
+			recordingMimeTypeRef.current = mimeType;
+
+			const mediaRecorder = new MediaRecorder(stream, { mimeType });
 			mediaRecorderRef.current = mediaRecorder;
 			audioChunksRef.current = [];
 			mediaRecorder.ondataavailable = (e) => {
@@ -49,8 +122,8 @@ export default function AudioPlayer({
 			mediaRecorder.start();
 			setIsRecording(true);
 			setErrorMessage("");
-		} catch (err) {
-			setErrorMessage("Mic access denied. Check browser permissions.");
+		} catch {
+			setErrorMessage("Mic access denied. Check your browser permissions.");
 		}
 	};
 
@@ -65,10 +138,10 @@ export default function AudioPlayer({
 	};
 
 	const processAudioRecording = async () => {
-		const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-
-		// FIX 2: Better time capture logic
-		const currentTime = playerRef.current?.getCurrentTime() || 0;
+		const audioBlob = new Blob(audioChunksRef.current, {
+			type: recordingMimeTypeRef.current,
+		});
+		const currentTime = noteTimestampRef.current;
 
 		if (audioBlob.size < 1000) {
 			setErrorMessage("Recording too short.");
@@ -78,20 +151,23 @@ export default function AudioPlayer({
 		setIsProcessingAI(true);
 
 		try {
+			const sourceContext = getTranscriptWindow(
+				episodeSegmentsRef.current,
+				currentTime,
+			);
 			const formData = new FormData();
 			formData.append("audio", audioBlob);
 			formData.append("timestamp", currentTime.toString());
 			formData.append("episodeTitle", episodeTitle || "Unknown Episode");
+			formData.append("sourceContext", sourceContext);
 
 			const res = await fetch("/api/process-voice-note", {
 				method: "POST",
 				body: formData,
 			});
-
 			const aiData = await res.json();
 			if (aiData.error) throw new Error(aiData.error);
 
-			// SAVE TO SUPABASE
 			if (userId) {
 				const supabase = createClient();
 				const { error: dbError } = await supabase.from("user_notes").insert({
@@ -106,17 +182,18 @@ export default function AudioPlayer({
 				if (dbError) console.error("Supabase Error:", dbError.message);
 			}
 
-			// Update UI list
-			setSavedNotes((prev) => [
-				{
-					time: Math.floor(currentTime),
-					text: aiData.refined_quote,
-					summary: aiData.summary,
-					flag: aiData.emotional_flag,
-				},
-				...prev,
-			]);
-		} catch (error: any) {
+			setSavedNotes((prev) =>
+				[
+					{
+						time: Math.floor(currentTime),
+						text: aiData.refined_quote,
+						summary: aiData.summary,
+						flag: aiData.emotional_flag,
+					},
+					...prev,
+				].sort((a, b) => b.time - a.time),
+			);
+		} catch {
 			setErrorMessage("AI processing failed.");
 		} finally {
 			setIsProcessingAI(false);
@@ -133,23 +210,20 @@ export default function AudioPlayer({
 		return `${m}:${s}`;
 	};
 
-	const isYouTube =
-		audioUrl?.includes("youtube.com") || audioUrl?.includes("youtu.be");
-
 	return (
-		<div className="max-w-md mx-auto p-6 bg-slate-900 text-white rounded-xl shadow-lg mt-10 border border-slate-800">
-			<h2 className="text-xl font-bold mb-4 truncate text-center">
+		<div className="max-w-md mx-auto p-6 bg-[var(--surface)] text-[var(--text)] rounded-2xl shadow-sm border border-[var(--border)]">
+			<h2 className="text-lg font-semibold mb-5 truncate text-center tracking-tight">
 				{episodeTitle || "Media Player"}
 			</h2>
 
 			{isMounted && audioUrl && (
-				<div className="mb-6 rounded-lg overflow-hidden border border-slate-700 bg-black flex justify-center">
+				<div className="mb-6 rounded-xl overflow-hidden border border-[var(--border)] bg-black flex justify-center">
 					<ReactPlayer
 						ref={playerRef}
 						url={audioUrl}
 						width="100%"
 						height={isYouTube ? "240px" : "50px"}
-						controls={true}
+						controls
 						playing={isPlaying}
 						onPlay={() => setIsPlaying(true)}
 						onPause={() => setIsPlaying(false)}
@@ -158,7 +232,7 @@ export default function AudioPlayer({
 			)}
 
 			<div className="flex flex-col items-center mb-8">
-				<p className="text-gray-400 text-sm mb-3">
+				<p className="text-[var(--text-muted)] text-sm mb-4">
 					Press and hold to take a note
 				</p>
 				<button
@@ -168,56 +242,67 @@ export default function AudioPlayer({
 					onTouchStart={startRecording}
 					onTouchEnd={stopRecording}
 					onContextMenu={(e) => e.preventDefault()}
-					className={`w-32 h-32 rounded-full font-bold shadow-2xl transition-all duration-200 flex items-center justify-center select-none ${
+					className={`relative w-28 h-28 rounded-full font-medium shadow-md transition-all duration-200 flex items-center justify-center select-none text-white ${
 						isRecording
-							? "bg-red-500 scale-95 shadow-red-500/50 ring-4 ring-red-400"
-							: "bg-red-700 hover:bg-red-600 hover:scale-105"
+							? "bg-[var(--danger)] scale-95"
+							: "bg-[var(--accent)] hover:bg-[var(--accent-hover)] hover:scale-105"
 					}`}
 				>
-					{isRecording ? "🎙 Recording..." : "🎤 Hold"}
+					{isRecording && (
+						<span className="absolute inset-0 rounded-full bg-[var(--danger)] opacity-40 animate-ping" />
+					)}
+					<span className="relative text-sm">
+						{isRecording ? "Recording…" : "Hold"}
+					</span>
 				</button>
+				{transcriptStatus === "loading" && (
+					<p className="text-[11px] text-[var(--text-muted)] mt-3">
+						Prepping this episode's transcript…
+					</p>
+				)}
 			</div>
 
-			<div className="flex flex-col items-center mb-4">
+			<div className="flex flex-col items-center mb-4 gap-2">
 				{errorMessage && (
-					<div className="bg-red-900/50 border border-red-500 text-red-200 px-4 py-2 rounded-lg text-sm mb-2">
+					<div className="w-full bg-[var(--danger)]/10 border border-[var(--danger)]/30 text-[var(--danger)] px-4 py-2 rounded-xl text-sm text-center">
 						{errorMessage}
 					</div>
 				)}
 				{isProcessingAI && (
-					<div className="text-sm text-blue-400 animate-pulse font-medium bg-blue-900/30 px-4 py-2 rounded-full">
-						🤖 AI is processing...
+					<div className="text-sm text-[var(--accent)] font-medium bg-[var(--accent-soft)] px-4 py-2 rounded-full flex items-center gap-2">
+						<span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
+						AI is processing…
 					</div>
 				)}
 			</div>
 
-			<div className="border-t border-slate-700 pt-4">
-				<h3 className="font-semibold text-gray-300 mb-4">
-					Recent Session Notes:
+			<div className="border-t border-[var(--border)] pt-5">
+				<h3 className="font-medium text-sm text-[var(--text-muted)] mb-3">
+					Recent session notes
 				</h3>
 				{savedNotes.length === 0 ? (
-					<p className="text-gray-500 text-xs italic text-center">
+					<p className="text-[var(--text-muted)] text-xs italic text-center py-2">
 						Notes will appear here after AI processing.
 					</p>
 				) : (
-					<ul className="space-y-4">
+					<ul className="space-y-3">
 						{savedNotes.map((note, i) => (
 							<li
 								key={i}
-								className="bg-slate-800 p-4 rounded-lg border border-slate-700 animate-in fade-in slide-in-from-top-2"
+								className="bg-[var(--bg)] p-4 rounded-xl border border-[var(--border)] animate-in fade-in slide-in-from-top-2"
 							>
 								<div className="flex justify-between items-start mb-2">
-									<span className="text-[10px] font-bold uppercase tracking-wider text-purple-300 bg-purple-900/50 px-2 py-0.5 rounded">
+									<span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--accent)] bg-[var(--accent-soft)] px-2 py-0.5 rounded-md">
 										{note.flag || "Note"}
 									</span>
-									<span className="font-mono text-blue-400 text-xs">
+									<span className="font-mono text-[var(--text-muted)] text-xs">
 										{formatTime(note.time)}
 									</span>
 								</div>
-								<p className="text-white text-sm font-medium leading-tight">
+								<p className="text-[var(--text)] text-sm font-medium leading-snug">
 									{note.summary}
 								</p>
-								<p className="text-gray-400 text-xs italic mt-2 border-l border-gray-600 pl-2">
+								<p className="text-[var(--text-muted)] text-xs italic mt-2 border-l-2 border-[var(--border)] pl-2">
 									"{note.text}"
 								</p>
 							</li>

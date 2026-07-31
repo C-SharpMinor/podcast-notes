@@ -15,67 +15,57 @@ export default function ChoiceModal({
 }: ChoiceModalProps) {
 	if (!isOpen || !podcastData) return null;
 
+	const title = podcastData.trackName || podcastData.collectionName;
+	const artwork = podcastData.artworkUrl600 || podcastData.artworkUrl100;
+
 	return (
-		<div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 animate-in fade-in duration-200">
-			<div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-sm w-full shadow-2xl text-center scale-up-center">
-				{/* Artwork */}
-				<div className="relative w-32 h-32 mx-auto mb-6">
+		<div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+			<div
+				className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+				onClick={onClose}
+			/>
+			<div className="relative w-full max-w-sm bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
+				<div className="flex items-center gap-3 mb-5">
 					{/* eslint-disable-next-line @next/next/no-img-element */}
-					<img
-						// This checks for the biggest image first, then falls back to smaller ones
-						src={
-							podcastData.artworkUrl600 ||
-							podcastData.artworkUrl100 ||
-							podcastData.artworkUrl60
-						}
-						alt={podcastData.trackName || "cover"}
-						className="w-full h-full rounded-2xl shadow-2xl border border-slate-700 object-cover"
-						// Handle broken links by hiding the broken icon
-						onError={(e) => {
-							(e.target as HTMLImageElement).src =
-								"https://via.placeholder.com/150?text=No+Image";
-						}}
-					/>
-					<div className="absolute -bottom-2 -right-2 bg-blue-600 rounded-full p-1.5 shadow-lg">
-						<svg
-							className="w-5 h-5 text-white"
-							fill="currentColor"
-							viewBox="0 0 20 20"
-						>
-							<path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
-						</svg>
+					{artwork && (
+						<img
+							src={artwork}
+							alt=""
+							className="w-12 h-12 rounded-xl shadow-sm"
+						/>
+					)}
+					<div className="overflow-hidden">
+						<p className="font-medium text-sm text-[var(--text)] truncate">
+							{title}
+						</p>
+						<p className="text-xs text-[var(--text-muted)] truncate">
+							{podcastData.collectionName}
+						</p>
 					</div>
 				</div>
 
-				<h3 className="text-white font-extrabold text-xl mb-2 line-clamp-2">
-					{podcastData.trackName || podcastData.collectionName}
-				</h3>
-				<p className="text-gray-400 text-sm mb-8 px-2">
-					{podcastData.wrapperType === "podcastEpisode"
-						? `Found a specific episode from "${podcastData.collectionName}". How do you want to proceed?`
-						: "Would you like to jump into the latest episode or browse the full list?"}
-				</p>
-
-				<div className="flex flex-col gap-3">
+				<div className="space-y-2">
 					<button
 						onClick={() => onConfirm("play")}
-						className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-2xl transition-all active:scale-95 shadow-lg shadow-blue-900/20"
+						className="w-full rounded-xl bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium py-2.5 transition-colors"
 					>
-						Play Episode Now
+						Play this episode
 					</button>
 					<button
 						onClick={() => onConfirm("list")}
-						className="w-full bg-slate-800 hover:bg-slate-700 text-gray-200 font-semibold py-4 rounded-2xl transition-all active:scale-95"
+						className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-hover)] text-[var(--text)] text-sm font-medium py-2.5 transition-colors"
 					>
-						View Episode List
-					</button>
-					<button
-						onClick={onClose}
-						className="mt-4 text-gray-500 hover:text-white text-sm font-medium transition"
-					>
-						Maybe Later
+						Browse all episodes
 					</button>
 				</div>
+
+				<button
+					onClick={onClose}
+					className="absolute top-4 right-4 text-[var(--text-muted)] hover:text-[var(--text)]"
+					aria-label="Close"
+				>
+					✕
+				</button>
 			</div>
 		</div>
 	);

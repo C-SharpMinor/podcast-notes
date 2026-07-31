@@ -1,20 +1,13 @@
-import type { Metadata, Viewport } from "next";
-import { Inter } from "next/font/google";
+import type { Metadata } from "next";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import "./globals.css";
-
-const inter = Inter({ subsets: ["latin"] });
+import { ThemeProvider } from "@/components/ThemeProvider";
+import { ToastProvider } from "@/components/Toast";
 
 export const metadata: Metadata = {
 	title: "AI Podcast Notes",
 	description: "Voice-activated podcast note-taking",
-};
-
-export const viewport: Viewport = {
-	themeColor: "#020617",
-	width: "device-width",
-	initialScale: 1,
-	maximumScale: 1, // Prevents annoying double-tap zooming on iPhones
-	userScalable: false,
 };
 
 export default function RootLayout({
@@ -23,10 +16,15 @@ export default function RootLayout({
 	children: React.ReactNode;
 }) {
 	return (
-		// Adding suppressHydrationWarning here
-		<html lang="en" suppressHydrationWarning>
-			<body className={inter.className} suppressHydrationWarning>
-				{children}
+		<html
+			lang="en"
+			className={`${GeistSans.variable} ${GeistMono.variable}`}
+			suppressHydrationWarning
+		>
+			<body>
+				<ThemeProvider>
+					<ToastProvider>{children}</ToastProvider>
+				</ThemeProvider>
 			</body>
 		</html>
 	);

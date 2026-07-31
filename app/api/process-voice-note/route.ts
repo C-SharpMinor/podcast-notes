@@ -1,12 +1,30 @@
 import { NextResponse } from "next/server";
+import { createClient } from "@/utils/supabase/server";
+import { strictRatelimit } from "@/utils/ratelimit";
 
 export async function POST(req: Request) {
+	const supabase = await createClient();
+	const {
+		data: { user },
+	} = await supabase.auth.getUser();
+	if (!user) {
+		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	}
+
+	const { success } = await strictRatelimit.limit(user.id);
+	if (!success) {
+		return NextResponse.json(
+			{ error: "Too many requests, slow down." },
+			{ status: 429 },
+		);
+	}
+
 	try {
-		// 1. Receive the audio file and context from the frontend
 		const formData = await req.formData();
 		const audioFile = formData.get("audio") as Blob;
 		const timestamp = formData.get("timestamp");
 		const episodeTitle = formData.get("episodeTitle");
+		const sourceContext = (formData.get("sourceContext") as string) || "";
 
 		if (!audioFile) {
 			return NextResponse.json(
@@ -15,53 +33,59 @@ export async function POST(req: Request) {
 			);
 		}
 
-		// 2. PHASE 1: Send the Audio to Groq's Whisper API
-		// We have to pack it into a new FormData object for Groq
+		// PHASE 1: transcribe the user's spoken instruction
+		const ext = audioFile.type.includes("mp4") ? "mp4" : "webm";
 		const groqFormData = new FormData();
-		groqFormData.append("file", audioFile, "voice-note.webm");
-		groqFormData.append("model", "whisper-large-v3-turbo"); // Groq's insanely fast Whisper model
+		groqFormData.append("file", audioFile, `voice-note.${ext}`);
+		groqFormData.append("model", "whisper-large-v3-turbo");
 		groqFormData.append("response_format", "json");
 
 		const whisperResponse = await fetch(
 			"https://api.groq.com/openai/v1/audio/transcriptions",
 			{
 				method: "POST",
-				headers: {
-					Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-				},
+				headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
 				body: groqFormData,
 			},
 		);
 
-		const whisperData = await whisperResponse.json();
-
-		if (whisperData.error) {
-			console.error("Whisper Error:", whisperData.error);
-			throw new Error("Failed to transcribe audio");
+		if (!whisperResponse.ok) {
+			throw new Error(`Whisper request failed: ${whisperResponse.status}`);
 		}
+		const whisperData = await whisperResponse.json();
+		if (whisperData.error) throw new Error("Failed to transcribe audio");
 
-		const spokenNote = whisperData.text.trim();
-		console.log("🗣️ WHISPER HEARD:", spokenNote);
-
-		// If it's just a period, comma, or less than 2 real letters, kill the process
+		const spokenNote = (whisperData.text || "").trim();
 		const cleanNote = spokenNote.replace(/[^a-zA-Z0-9]/g, "");
 		if (cleanNote.length < 2) {
-			console.log("⚠️ No significant speech detected. Stopping.");
-			return NextResponse.json(
-				{ error: "Audio was silent or unclear." },
-				{ status: 400 },
-			);
-		}
-		// ----------------------------------------
-
-		if (!spokenNote) {
 			return NextResponse.json(
 				{ error: "Audio was silent or unclear." },
 				{ status: 400 },
 			);
 		}
 
-		// 3. PHASE 2: Send the Transcription to Groq's Llama 3 API
+		// PHASE 2: ground the note in what was ACTUALLY said in the podcast
+		const hasSource = sourceContext.trim().length > 0;
+
+		const systemPrompt = `You are an intelligent podcast note-taking assistant.
+The user is listening to a podcast called "${episodeTitle}".
+
+${
+	hasSource
+		? `Here is what was actually said in the podcast in the ~45 seconds before they spoke. This is the SOURCE MATERIAL — quote and summarize FROM THIS, not from the user's own words:
+"""
+${sourceContext}
+"""`
+		: `No transcript of the podcast was available for this moment.`
+}
+
+The user triggered a voice note at timestamp ${timestamp}s and said: "${spokenNote}" — treat this as their INSTRUCTION for what to capture, not as content to quote itself.
+
+Return ONLY a valid JSON object with exactly these three keys:
+- "summary": a one-sentence summary of the relevant point from the source material, guided by the user's instruction.
+- "emotional_flag": a single word describing the vibe (e.g., "Inspiring", "Technical", "Insightful", "Funny").
+- "refined_quote": the most relevant quote from the SOURCE MATERIAL matching what the user wanted noted. ${hasSource ? "" : "Since no source transcript was available, fall back to a polished version of what the user said, and mention in the summary that no source match was found."}`;
+
 		const llamaResponse = await fetch(
 			"https://api.groq.com/openai/v1/chat/completions",
 			{
@@ -71,21 +95,8 @@ export async function POST(req: Request) {
 					Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
 				},
 				body: JSON.stringify({
-					model: "llama-3.1-8b-instant",
-					messages: [
-						{
-							role: "system",
-							content: `You are an intelligent podcast note-taking assistant. 
-            The user is listening to a podcast called "${episodeTitle}". 
-            They triggered a voice note at timestamp ${timestamp}s by saying: "${spokenNote}".
-            
-            Synthesize their thought into a structured note.
-            You MUST return ONLY a valid JSON object with exactly these three keys:
-            - "summary": A clean, one-sentence summary of the note.
-            - "emotional_flag": A single word describing the vibe (e.g., "Inspiring", "Technical", "Insightful", "Funny").
-            - "refined_quote": A polished, professional version of what they said.`,
-						},
-					],
+					model: "openai/gpt-oss-20b",
+					messages: [{ role: "system", content: systemPrompt }],
 					response_format: { type: "json_object" },
 				}),
 			},
@@ -93,41 +104,29 @@ export async function POST(req: Request) {
 
 		const llamaData = await llamaResponse.json();
 
-		// --- 🚨 NEW: CATCH THE EXACT LLAMA ERROR ---
 		if (!llamaData.choices || llamaData.error) {
 			console.error(
-				"❌ GROQ LLAMA REJECTED THE REQUEST:",
-				JSON.stringify(llamaData.error || llamaData, null, 2),
+				"Groq chat model rejected the request:",
+				llamaData.error || llamaData,
 			);
-
-			// Return a safe fallback so the frontend doesn't crash, allowing you to at least save the Whisper transcript!
 			return NextResponse.json({
-				summary: "Llama API Error. Check VS Code Terminal.",
+				summary: "AI processing error. Check server logs.",
 				emotional_flag: "ERROR",
 				refined_quote: "Failed to generate AI note.",
 				raw_transcript: spokenNote,
 			});
 		}
-		// -------------------------------------------
 
 		const rawAiContent = llamaData.choices[0].message.content;
-		console.log("🤖 RAW LLAMA RESPONSE:", rawAiContent);
-
-		// 4. PHASE 3: The Markdown-JSON Conflict Fix
-		let aiResult = {};
+		let aiResult: any = {};
 		try {
-			// Mathematically slice out ONLY what is between the curly brackets
 			const jsonStart = rawAiContent.indexOf("{");
 			const jsonEnd = rawAiContent.lastIndexOf("}");
-
-			if (jsonStart !== -1 && jsonEnd !== -1) {
-				const cleanJsonString = rawAiContent.substring(jsonStart, jsonEnd + 1);
-				aiResult = JSON.parse(cleanJsonString);
-			} else {
-				aiResult = JSON.parse(rawAiContent); // Fallback
-			}
-		} catch (error) {
-			console.error("❌ JSON Parse Error. Llama returned bad formatting.");
+			aiResult =
+				jsonStart !== -1 && jsonEnd !== -1
+					? JSON.parse(rawAiContent.substring(jsonStart, jsonEnd + 1))
+					: JSON.parse(rawAiContent);
+		} catch {
 			aiResult = {
 				summary: "AI formatting error.",
 				emotional_flag: "ERROR",
@@ -135,7 +134,6 @@ export async function POST(req: Request) {
 			};
 		}
 
-		// Return the clean JSON + the raw transcript so you can save both to the database
 		return NextResponse.json({ ...aiResult, raw_transcript: spokenNote });
 	} catch (error) {
 		console.error("Server Pipeline Error:", error);
