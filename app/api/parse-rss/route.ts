@@ -92,8 +92,6 @@ export async function POST(req: Request) {
 		}
 
 		const rssText = await rssResponse.text();
-
-		// Fail fast with a clear message instead of letting the XML parser blow up on non-feed content
 		const trimmed = rssText.trim();
 		const looksLikeFeed =
 			trimmed.startsWith("<?xml") ||
@@ -127,12 +125,14 @@ export async function POST(req: Request) {
 					pubDate: item.pubDate,
 					audioUrl: item.enclosure?.url,
 					guid: item.guid,
+					duration: (item as any).itunes?.duration || null,
 				}))
 				.filter((item) => item.audioUrl) || [];
 
 		return NextResponse.json({
 			podcastTitle: feed.title,
 			podcastArtwork: feed.itunes?.image || feed.image?.url || "",
+			podcastAuthor: feed.itunes?.author || (feed as any).creator || "",
 			episodes,
 		});
 	} catch (error: any) {

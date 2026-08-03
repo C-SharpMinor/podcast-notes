@@ -2,19 +2,9 @@
 
 import { useState, useRef, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
-import dynamic from "next/dynamic";
-
-const ReactPlayer = dynamic(() => import("react-player"), {
-	ssr: false,
-}) as any;
-
-interface AudioPlayerProps {
-	audioUrl?: string;
-	episodeTitle?: string;
-	userId?: string;
-	sourceType?: "rss" | "youtube" | "upload";
-	storagePath?: string;
-}
+import HighlightsStrip from "@/components/HighlightsStrip";
+import { resolveEpisodeId } from "@/utils/resolveEpisode";
+import { usePlayer } from "@/contexts/PlayerContext";
 
 type TranscriptSegment = { start: number; end: number; text: string };
 
@@ -30,21 +20,16 @@ function getTranscriptWindow(
 		.join(" ");
 }
 
-export default function AudioPlayer({
-	audioUrl,
-	episodeTitle,
-	userId,
-	sourceType,
-	storagePath,
-}: AudioPlayerProps) {
-	const playerRef = useRef<any>(null);
+export default function NowPlayingPanel({ userId }: { userId?: string }) {
+	const { track, currentTime, setPlaying } = usePlayer();
+
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const audioChunksRef = useRef<Blob[]>([]);
 	const recordingMimeTypeRef = useRef("audio/webm");
 	const noteTimestampRef = useRef(0);
 	const episodeSegmentsRef = useRef<TranscriptSegment[]>([]);
+	const fetchingKeyRef = useRef<string | null>(null);
 
-	const [isPlaying, setIsPlaying] = useState(false);
 	const [isRecording, setIsRecording] = useState(false);
 	const [isProcessingAI, setIsProcessingAI] = useState(false);
 	const [errorMessage, setErrorMessage] = useState("");
@@ -52,23 +37,57 @@ export default function AudioPlayer({
 	const [transcriptStatus, setTranscriptStatus] = useState<
 		"idle" | "loading" | "ready" | "error"
 	>("idle");
-	const [isMounted, setIsMounted] = useState(false);
+	const [transcriptError, setTranscriptError] = useState("");
+	const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+	const [episodeId, setEpisodeId] = useState<string | null>(null);
 
-	useEffect(() => setIsMounted(true), []);
 	useEffect(() => {
 		return () => {
 			mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop());
 		};
 	}, []);
 
-	const isYouTube =
-		audioUrl?.includes("youtube.com") || audioUrl?.includes("youtu.be");
-	const effectiveSourceType = sourceType || (isYouTube ? "youtube" : "rss");
+	const audioUrl = track?.audioUrl;
+	const episodeTitle = track?.episodeTitle;
+	const storagePath = track?.storagePath;
+	const sourceMeta = track?.sourceMeta;
+	const effectiveSourceType = track?.sourceType || "rss";
+
+	useEffect(() => {
+		if (!audioUrl || !sourceMeta) {
+			setEpisodeId(track?.episodeId ?? null);
+			return;
+		}
+		const supabase = createClient();
+		resolveEpisodeId(supabase, {
+			sourceType: effectiveSourceType,
+			sourceTitle: sourceMeta.sourceTitle,
+			sourceUrl: sourceMeta.sourceUrl,
+			authorName: sourceMeta.authorName,
+			episodeTitle: episodeTitle || "Unknown Episode",
+			episodeAudioUrl: storagePath || audioUrl,
+		}).then(setEpisodeId);
+	}, [
+		audioUrl,
+		episodeTitle,
+		storagePath,
+		sourceMeta,
+		effectiveSourceType,
+		track?.episodeId,
+	]);
 
 	useEffect(() => {
 		if (!audioUrl) return;
+
+		const fetchKey = `${effectiveSourceType}:${storagePath || audioUrl}`;
+		if (fetchingKeyRef.current === fetchKey) return;
+		fetchingKeyRef.current = fetchKey;
+
+		setSavedNotes([]);
 		episodeSegmentsRef.current = [];
+		setSegments([]);
 		setTranscriptStatus("loading");
+		setTranscriptError("");
 
 		const endpoint =
 			effectiveSourceType === "youtube"
@@ -81,27 +100,39 @@ export default function AudioPlayer({
 					? { storagePath }
 					: { audioUrl };
 
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), 270_000);
+
 		fetch(endpoint, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
+			signal: controller.signal,
 		})
 			.then((r) => r.json())
 			.then((data) => {
 				if (data.segments) {
 					episodeSegmentsRef.current = data.segments;
+					setSegments(data.segments);
 					setTranscriptStatus("ready");
 				} else {
 					setTranscriptStatus("error");
+					setTranscriptError(data.error || "");
 				}
 			})
-			.catch(() => setTranscriptStatus("error"));
+			.catch(() => setTranscriptStatus("error"))
+			.finally(() => {
+				clearTimeout(timeoutId);
+				if (fetchingKeyRef.current === fetchKey) fetchingKeyRef.current = null;
+			});
+
+		return () => clearTimeout(timeoutId);
 	}, [audioUrl, effectiveSourceType, storagePath]);
 
 	const startRecording = async () => {
 		if (!audioUrl) return setErrorMessage("Load an episode or video first.");
-		noteTimestampRef.current = playerRef.current?.getCurrentTime() || 0;
-		setIsPlaying(false);
+		noteTimestampRef.current = currentTime;
+		setPlaying(false);
 
 		try {
 			const stream = await navigator.mediaDevices.getUserMedia({
@@ -131,9 +162,7 @@ export default function AudioPlayer({
 		if (mediaRecorderRef.current && isRecording) {
 			mediaRecorderRef.current.stop();
 			setIsRecording(false);
-			mediaRecorderRef.current.stream
-				.getTracks()
-				.forEach((track) => track.stop());
+			mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
 		}
 	};
 
@@ -141,7 +170,7 @@ export default function AudioPlayer({
 		const audioBlob = new Blob(audioChunksRef.current, {
 			type: recordingMimeTypeRef.current,
 		});
-		const currentTime = noteTimestampRef.current;
+		const currentTs = noteTimestampRef.current;
 
 		if (audioBlob.size < 1000) {
 			setErrorMessage("Recording too short.");
@@ -153,11 +182,11 @@ export default function AudioPlayer({
 		try {
 			const sourceContext = getTranscriptWindow(
 				episodeSegmentsRef.current,
-				currentTime,
+				currentTs,
 			);
 			const formData = new FormData();
 			formData.append("audio", audioBlob);
-			formData.append("timestamp", currentTime.toString());
+			formData.append("timestamp", currentTs.toString());
 			formData.append("episodeTitle", episodeTitle || "Unknown Episode");
 			formData.append("sourceContext", sourceContext);
 
@@ -172,20 +201,35 @@ export default function AudioPlayer({
 				const supabase = createClient();
 				const { error: dbError } = await supabase.from("user_notes").insert({
 					user_id: userId,
+					episode_id: episodeId,
 					episode_title: episodeTitle || "Unknown Episode",
-					timestamp_seconds: Math.floor(currentTime),
+					timestamp_seconds: Math.floor(currentTs),
 					raw_transcript: aiData.raw_transcript,
 					ai_summary: aiData.summary,
 					refined_quote: aiData.refined_quote,
 					emotional_flag: aiData.emotional_flag,
+					source: "user",
 				});
-				if (dbError) console.error("Supabase Error:", dbError.message);
+				if (dbError) {
+					if (dbError.message.includes("monthly_note_limit_reached")) {
+						setErrorMessage(
+							"You've hit your free plan's 20 notes this month — upgrade to Pro for unlimited.",
+						);
+					} else {
+						console.error(
+							"Supabase insert error:",
+							dbError.message,
+							dbError.details,
+							dbError.hint,
+						);
+					}
+				}
 			}
 
 			setSavedNotes((prev) =>
 				[
 					{
-						time: Math.floor(currentTime),
+						time: Math.floor(currentTs),
 						text: aiData.refined_quote,
 						summary: aiData.summary,
 						flag: aiData.emotional_flag,
@@ -210,26 +254,17 @@ export default function AudioPlayer({
 		return `${m}:${s}`;
 	};
 
+	if (!track) return null;
+
 	return (
 		<div className="max-w-md mx-auto p-6 bg-[var(--surface)] text-[var(--text)] rounded-2xl shadow-sm border border-[var(--border)]">
-			<h2 className="text-lg font-semibold mb-5 truncate text-center tracking-tight">
+			<h2 className="text-lg font-semibold mb-1 truncate text-center tracking-tight">
 				{episodeTitle || "Media Player"}
 			</h2>
-
-			{isMounted && audioUrl && (
-				<div className="mb-6 rounded-xl overflow-hidden border border-[var(--border)] bg-black flex justify-center">
-					<ReactPlayer
-						ref={playerRef}
-						url={audioUrl}
-						width="100%"
-						height={isYouTube ? "240px" : "50px"}
-						controls
-						playing={isPlaying}
-						onPlay={() => setIsPlaying(true)}
-						onPause={() => setIsPlaying(false)}
-					/>
-				</div>
-			)}
+			<p className="text-center text-xs text-[var(--text-muted)] mb-5">
+				{formatTime(currentTime)} elapsed · playback controls are in the bar
+				below
+			</p>
 
 			<div className="flex flex-col items-center mb-8">
 				<p className="text-[var(--text-muted)] text-sm mb-4">
@@ -255,11 +290,6 @@ export default function AudioPlayer({
 						{isRecording ? "Recording…" : "Hold"}
 					</span>
 				</button>
-				{transcriptStatus === "loading" && (
-					<p className="text-[11px] text-[var(--text-muted)] mt-3">
-						Prepping this episode's transcript…
-					</p>
-				)}
 			</div>
 
 			<div className="flex flex-col items-center mb-4 gap-2">
@@ -276,9 +306,31 @@ export default function AudioPlayer({
 				)}
 			</div>
 
+			{transcriptStatus === "loading" && (
+				<div className="border-t border-[var(--border)] pt-5 mb-5 space-y-2 animate-pulse">
+					<div className="h-3 w-32 rounded bg-[var(--surface-hover)]" />
+					<div className="h-16 rounded-xl bg-[var(--surface-hover)]" />
+					<div className="h-16 rounded-xl bg-[var(--surface-hover)]" />
+				</div>
+			)}
+			{transcriptStatus === "error" && (
+				<p className="text-[11px] text-[var(--danger)] border-t border-[var(--border)] pt-5 mb-5">
+					{transcriptError || "Couldn't prepare a transcript for this episode."}
+				</p>
+			)}
+
+			<HighlightsStrip
+				episodeKey={storagePath || audioUrl}
+				episodeId={episodeId}
+				episodeTitle={episodeTitle}
+				segments={segments}
+				status={transcriptStatus}
+				userId={userId}
+			/>
+
 			<div className="border-t border-[var(--border)] pt-5">
 				<h3 className="font-medium text-sm text-[var(--text-muted)] mb-3">
-					Recent session notes
+					Your notes this session
 				</h3>
 				{savedNotes.length === 0 ? (
 					<p className="text-[var(--text-muted)] text-xs italic text-center py-2">

@@ -4,6 +4,7 @@ import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ToastProvider } from "@/components/Toast";
+import AppShell from "@/components/AppShell";
 
 export const metadata: Metadata = {
 	title: "AI Podcast Notes",
@@ -23,7 +24,9 @@ export default function RootLayout({
 		>
 			<body>
 				<ThemeProvider>
-					<ToastProvider>{children}</ToastProvider>
+					<ToastProvider>
+						<AppShell>{children}</AppShell>
+					</ToastProvider>
 				</ThemeProvider>
 			</body>
 		</html>

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { strictRatelimit } from "@/utils/ratelimit";
+import { getUserStyleExamples } from "@/utils/getStyleExamples";
 
 export async function POST(req: Request) {
 	const supabase = await createClient();
@@ -33,7 +34,6 @@ export async function POST(req: Request) {
 			);
 		}
 
-		// PHASE 1: transcribe the user's spoken instruction
 		const ext = audioFile.type.includes("mp4") ? "mp4" : "webm";
 		const groqFormData = new FormData();
 		groqFormData.append("file", audioFile, `voice-note.${ext}`);
@@ -48,10 +48,8 @@ export async function POST(req: Request) {
 				body: groqFormData,
 			},
 		);
-
-		if (!whisperResponse.ok) {
+		if (!whisperResponse.ok)
 			throw new Error(`Whisper request failed: ${whisperResponse.status}`);
-		}
 		const whisperData = await whisperResponse.json();
 		if (whisperData.error) throw new Error("Failed to transcribe audio");
 
@@ -64,8 +62,8 @@ export async function POST(req: Request) {
 			);
 		}
 
-		// PHASE 2: ground the note in what was ACTUALLY said in the podcast
 		const hasSource = sourceContext.trim().length > 0;
+		const styleGuidance = await getUserStyleExamples(supabase, user.id);
 
 		const systemPrompt = `You are an intelligent podcast note-taking assistant.
 The user is listening to a podcast called "${episodeTitle}".
@@ -80,7 +78,7 @@ ${sourceContext}
 }
 
 The user triggered a voice note at timestamp ${timestamp}s and said: "${spokenNote}" — treat this as their INSTRUCTION for what to capture, not as content to quote itself.
-
+${styleGuidance ? `\n${styleGuidance}\n` : ""}
 Return ONLY a valid JSON object with exactly these three keys:
 - "summary": a one-sentence summary of the relevant point from the source material, guided by the user's instruction.
 - "emotional_flag": a single word describing the vibe (e.g., "Inspiring", "Technical", "Insightful", "Funny").
@@ -103,7 +101,6 @@ Return ONLY a valid JSON object with exactly these three keys:
 		);
 
 		const llamaData = await llamaResponse.json();
-
 		if (!llamaData.choices || llamaData.error) {
 			console.error(
 				"Groq chat model rejected the request:",

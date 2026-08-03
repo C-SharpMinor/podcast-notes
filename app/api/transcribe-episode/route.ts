@@ -1,9 +1,31 @@
-// app/api/transcribe-episode/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
-import { strictRatelimit } from "@/utils/ratelimit";
+import dns from "dns/promises";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
+
+async function isSafeUrl(url: string) {
+	const parsed = new URL(url);
+	if (!["http:", "https:"].includes(parsed.protocol)) return false;
+	const { address } = await dns.lookup(parsed.hostname);
+	const priv = /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/;
+	return !priv.test(address) && address !== "::1";
+}
+
+async function resolveFinalUrl(url: string): Promise<string> {
+	const res = await fetch(url, {
+		method: "GET",
+		redirect: "follow",
+		signal: AbortSignal.timeout(20_000),
+		headers: {
+			"User-Agent":
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		},
+	});
+	const finalUrl = res.url;
+	await res.body?.cancel();
+	return finalUrl;
+}
 
 export async function POST(req: Request) {
 	const supabase = await createClient();
@@ -13,14 +35,20 @@ export async function POST(req: Request) {
 	if (!user)
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-	const { success } = await strictRatelimit.limit(user.id);
-	if (!success) {
+	let audioUrl: string | undefined;
+	let storagePath: string | undefined;
+	try {
+		const body = await req.json();
+		audioUrl = body.audioUrl;
+		storagePath = body.storagePath;
+	} catch {
+		// Empty or malformed body — likely a stale/aborted request racing a real one. Fail quietly.
 		return NextResponse.json(
-			{ error: "Too many requests, slow down." },
-			{ status: 429 },
+			{ error: "Invalid request body" },
+			{ status: 400 },
 		);
 	}
-	const { audioUrl, storagePath } = await req.json();
+
 	if (!audioUrl && !storagePath) {
 		return NextResponse.json(
 			{ error: "audioUrl or storagePath is required" },
@@ -28,7 +56,14 @@ export async function POST(req: Request) {
 		);
 	}
 
-	const cacheKey = storagePath || audioUrl; // stable identifier either way
+	if (audioUrl && !(await isSafeUrl(audioUrl))) {
+		return NextResponse.json(
+			{ error: "This URL isn't allowed." },
+			{ status: 400 },
+		);
+	}
+
+	const cacheKey = storagePath || audioUrl!;
 
 	const { data: existing } = await supabase
 		.from("episode_transcripts")
@@ -48,17 +83,21 @@ export async function POST(req: Request) {
 		);
 
 	try {
-		let fetchUrl = audioUrl;
+		let sourceUrl = audioUrl;
 		if (storagePath) {
 			const { data: signed, error: signErr } = await supabase.storage
 				.from("episode-audio")
 				.createSignedUrl(storagePath, 3600);
 			if (signErr || !signed) throw new Error("Could not sign storage URL");
-			fetchUrl = signed.signedUrl;
+			sourceUrl = signed.signedUrl;
 		}
 
+		console.log("Resolving redirect for", sourceUrl);
+		const finalUrl = await resolveFinalUrl(sourceUrl!);
+		console.log("Resolved to", finalUrl, "— sending to Groq...");
+
 		const groqForm = new FormData();
-		groqForm.append("url", fetchUrl);
+		groqForm.append("url", finalUrl);
 		groqForm.append("model", "whisper-large-v3-turbo");
 		groqForm.append("response_format", "verbose_json");
 		groqForm.append("timestamp_granularities[]", "segment");
@@ -69,12 +108,27 @@ export async function POST(req: Request) {
 				method: "POST",
 				headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
 				body: groqForm,
+				signal: AbortSignal.timeout(240_000),
 			},
 		);
-		if (!groqRes.ok)
-			throw new Error(
-				`Groq transcription failed: ${groqRes.status} ${await groqRes.text()}`,
+
+		if (!groqRes.ok) {
+			const errText = await groqRes.text();
+			const isTooLarge = errText.includes("too large");
+			console.error(`Groq transcription failed: ${groqRes.status} ${errText}`);
+			await supabase
+				.from("episode_transcripts")
+				.update({ status: "failed" })
+				.eq("audio_url", cacheKey);
+			return NextResponse.json(
+				{
+					error: isTooLarge
+						? "This episode is too long to transcribe right now (file size limit)."
+						: "Failed to transcribe episode",
+				},
+				{ status: 500 },
 			);
+		}
 
 		const data = await groqRes.json();
 		const segments = (data.segments || []).map((s: any) => ({
@@ -83,13 +137,16 @@ export async function POST(req: Request) {
 			text: (s.text || "").trim(),
 		}));
 
+		console.log(`Transcription complete: ${segments.length} segments`);
 		await supabase
 			.from("episode_transcripts")
 			.update({ status: "ready", segments })
 			.eq("audio_url", cacheKey);
 		return NextResponse.json({ segments });
 	} catch (err: any) {
-		console.error("Episode transcription failed:", err.message);
+		const reason =
+			err.name === "TimeoutError" ? "Request timed out" : err.message;
+		console.error("Episode transcription failed:", reason);
 		await supabase
 			.from("episode_transcripts")
 			.update({ status: "failed" })

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { looseRatelimit } from "@/utils/ratelimit";
 
 export async function POST(req: Request) {
 	const supabase = await createClient();
@@ -8,6 +9,14 @@ export async function POST(req: Request) {
 	} = await supabase.auth.getUser();
 	if (!user)
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+	const { success } = await looseRatelimit.limit(user.id);
+	if (!success) {
+		return NextResponse.json(
+			{ error: "Too many requests, slow down." },
+			{ status: 429 },
+		);
+	}
 
 	const { noteId, summary, refined_quote, emotional_flag } = await req.json();
 	if (!noteId)
@@ -52,15 +61,17 @@ export async function POST(req: Request) {
 	].filter((d) => d.before !== d.after);
 
 	if (diffs.length > 0) {
-		await supabase.from("note_edits").insert(
-			diffs.map((d) => ({
-				user_id: user.id,
-				note_id: noteId,
-				field: d.field,
-				original_value: d.before,
-				edited_value: d.after,
-			})),
-		);
+		await supabase
+			.from("note_edits")
+			.insert(
+				diffs.map((d) => ({
+					user_id: user.id,
+					note_id: noteId,
+					field: d.field,
+					original_value: d.before,
+					edited_value: d.after,
+				})),
+			);
 	}
 
 	return NextResponse.json({ success: true });
