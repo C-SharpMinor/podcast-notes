@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import BrandMark from "@/components/BrandMark";
 import { usePathname } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -41,8 +42,11 @@ export default function TopNav({ userEmail }: { userEmail?: string }) {
 
 	return (
 		<header className="sticky top-0 z-50 border-b border-[var(--border)] bg-[var(--bg)]/90 backdrop-blur-md">
-			<div className="max-w-4xl mx-auto flex items-center justify-between px-4 py-3.5">
-				<nav className="flex items-center gap-1 overflow-x-auto">
+			<div className="max-w-4xl mx-auto flex items-center justify-between gap-3 px-4 py-3">
+				<Link href="/" className="shrink-0 min-h-11 flex items-center" aria-label="PenDown home">
+    <BrandMark compact />
+  </Link>
+				<nav className="flex items-center gap-1 overflow-x-auto min-w-0">
 					{NAV_LINKS.map((link) => {
 						const active = pathname === link.href;
 						return (
@@ -56,7 +60,7 @@ export default function TopNav({ userEmail }: { userEmail?: string }) {
 						);
 					})}
 				</nav>
-				<div className="flex items-center gap-3 shrink-0">
+				<div className="flex items-center gap-2 shrink-0">
 					<ThemeToggle />
 					<Link
 						href="/account"

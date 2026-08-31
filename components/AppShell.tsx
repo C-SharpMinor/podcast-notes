@@ -6,6 +6,7 @@ import { createClient } from "@/utils/supabase/client";
 import { PlayerProvider } from "@/contexts/PlayerContext";
 import TopNav from "@/components/TopNav";
 import GlobalPlayerBar from "@/components/GlobalPlayerBar";
+import Footer from "@/components/Footer";
 import Auth from "@/components/Auth";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -41,7 +42,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 	return (
 		<PlayerProvider userId={session.user.id}>
 			<TopNav userEmail={session.user.email} />{" "}
-			<div className="pb-24">{children}</div>
+			<div className="pb-24 min-h-[calc(100vh-4rem)]">{children}
+				<Footer />
+			</div>
 			<GlobalPlayerBar />
 		</PlayerProvider>
 	);

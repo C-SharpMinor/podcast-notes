@@ -1,44 +1,63 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #F7F7FB;
-  --surface: #FFFFFF;
-  --surface-hover: #F0F0F8;
-  --border: #E3E3EF;
-  --text: #14151F;
-  --text-muted: #6B6C7E;
-  --accent: #6366F1;
-  --accent-hover: #4F46E5;
-  --accent-soft: #EEF0FF;
-  --danger: #E1435C;
-  --success: #0FA968;
-  --warning: #D97706;
+  --bg: #f4fbfb;
+  --bg-elevated: #ffffff;
+  --surface: #ffffff;
+  --surface-hover: #e8f6f6;
+  --border: color-mix(in oklab, #0b1c1c 12%, transparent);
+  --border-strong: color-mix(in oklab, #0b1c1c 22%, transparent);
+  --text: #071414;
+  --text-muted: #4a6a6c;
+  --accent: #0e8f8a;
+  --accent-hover: #0b7470;
+  --accent-soft: #d7f4f2;
+  --cyan: #0891b2;
+  --turquoise: #14b8a6;
+  --danger: #dc3d57;
+  --success: #0f9f6e;
+  --warning: #c27803;
+  --accent-fg: #f4fffe;
+  --shadow: 0 18px 40px -24px rgba(7, 20, 20, 0.28);
+  --font-display: var(--font-syne), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
 }
 
 .dark {
-  --bg: #0A0B10;
-  --surface: #13141D;
-  --surface-hover: #1A1C2A;
-  --border: #242637;
-  --text: #F2F2F7;
-  --text-muted: #9293A6;
-  --accent: #818CF8;
-  --accent-hover: #9CA5FA;
-  --accent-soft: #1C1E38;
-  --danger: #F1707F;
-  --success: #34D399;
-  --warning: #FBBF24;
+  --bg: #05090b;
+  --bg-elevated: #0b1316;
+  --surface: #0e181c;
+  --surface-hover: #132226;
+  --border: color-mix(in oklab, #e8fbff 12%, transparent);
+  --border-strong: color-mix(in oklab, #e8fbff 22%, transparent);
+  --text: #e8fbff;
+  --text-muted: #8aa3a8;
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-soft: #11332f;
+  --cyan: #22d3ee;
+  --turquoise: #14b8a6;
+  --danger: #fb7185;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --accent-fg: #041110;
+  --shadow: 0 24px 60px -28px rgba(0, 0, 0, 0.7);
 }
 
 body {
-  background: var(--bg);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, color-mix(in oklab, var(--cyan) 16%, transparent), transparent 55%),
+    radial-gradient(900px 420px at 110% 0%, color-mix(in oklab, var(--turquoise) 14%, transparent), transparent 50%),
+    var(--bg);
   color: var(--text);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
-  transition: background-color 0.2s ease, color 0.2s ease;
+  font-family: var(--font-body);
+  min-height: 100vh;
 }
 
 h1, h2, h3, h4 {
-  letter-spacing: -0.02em;
+  font-family: var(--font-display);
+  letter-spacing: -0.03em;
+  font-weight: 600;
 }
 
 ::selection {

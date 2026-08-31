@@ -215,6 +215,8 @@ export default function Home() {
 			<RecentListeningsCard />
 
 			<h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-[var(--text)] mb-3">
+				PenDown:
+				<br></br>
 				Voice-activated notes
 			</h1>
 			<p className="text-[var(--text-muted)] mb-10 text-base leading-relaxed">

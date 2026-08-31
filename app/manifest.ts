@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
 	return {
-		name: "AI Podcast Notes",
-		short_name: "AI Notes",
+		name: "PenDown",
+		short_name: "PenDown",
 		description: "Voice-activated podcast note-taking",
 		start_url: "/",
 		display: "standalone", // This is the magic word that removes the Safari/Chrome address bar

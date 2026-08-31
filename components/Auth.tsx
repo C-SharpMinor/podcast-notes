@@ -5,6 +5,8 @@ import { createClient } from "@/utils/supabase/client";
 import ThemeToggle from "@/components/ThemeToggle";
 import PasswordInput from "@/components/PasswordInput";
 import LoadingOverlay from "@/components/LoadingOverlay";
+import BrandMark from "@/components/BrandMark";
+import Footer from "./Footer";
 
 type ViewMode = "login" | "signup" | "forgot";
 type Message = { type: "error" | "success"; text: string } | null;
@@ -109,13 +111,16 @@ export default function Auth({ onLogin }: { onLogin: () => void }) {
 				<LoadingOverlay show={loading} />
 
 				<div className="mb-8 text-center">
-					<h1 className="text-2xl font-semibold tracking-tight text-[var(--text)]">
-						{titles[view].heading}
-					</h1>
-					<p className="text-sm text-[var(--text-muted)] mt-1.5">
-						{titles[view].sub}
-					</p>
-				</div>
+  <div className="flex justify-center mb-5">
+    <BrandMark />
+  </div>
+  <h1 className="text-2xl font-semibold tracking-tight text-[var(--text)]">
+    {titles[view].heading}
+  </h1>
+  <p className="text-sm text-[var(--text-muted)] mt-1.5">
+    {titles[view].sub}
+  </p>
+</div>
 
 				{message && (
 					<div
@@ -253,6 +258,10 @@ export default function Auth({ onLogin }: { onLogin: () => void }) {
 					)}
 				</p>
 			</div>
+			<div className="relative z-10 w-full">
+  <Footer />
+</div>
 		</div>
+		
 	);
 }
